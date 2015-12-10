@@ -33,6 +33,15 @@ typedef struct bloom {
 #define ceil(x, y) \
         ({ unsigned long __x = (x), __y = (y); (__x + __y - 1) / __y; })
 
+struct bpf_bloom {
+	struct bpf_map map;
+	spinlock_t lock;
+        uint32_t len;
+        bitset_t bits;
+        uint32_t m; // Number of buckets
+        uint8_t k;  // Number of hashes
+};
+
 /*
 bloom_t bloom_new(uint64_t n, double fprate){
   double fillRatio = 0.5;
@@ -48,12 +57,15 @@ bloom_t bloom_new(uint64_t n, double fprate){
   return b;
 }
 
-bool bloom_test(bloom_t b, void* key, uint32_t len){
-  uint32_t h=0,l=0;
-  hashlittle2(key,len,&h,&l);
+*/
+
+bool bloom_test(struct bpf_bloom *b, void* key, uint32_t len){
+  uint32_t l = jhash2(key,len,JHASH_INITVAL);
+  uint32_t h = jhash2(key,len,l);
   
   // Check the K bits.
-  for (uint32_t i = 0; i < b->k; i++ ){
+  uint32_t i = 0;
+  for (i = 0; i < b->k; i++ ){
     if (!bitset_isset(b->bits,(l+h*i) % b->m))
       return false;
   }
@@ -61,24 +73,15 @@ bool bloom_test(bloom_t b, void* key, uint32_t len){
   return true;
 };
 
-void bloom_add(bloom_t b, void* key, uint32_t len){
-  uint32_t h=0,l=0;
-  hashlittle2(key,len,&h,&l);
+void bloom_add(struct bpf_bloom *b, void* key, uint32_t len){
+  uint32_t l = jhash2(key,len,JHASH_INITVAL);
+  uint32_t h = jhash2(key,len,l);
 
   // Set the K bits.
-  for (uint32_t i = 0; i < b->k; i++ ){
+  uint32_t i = 0;
+  for (i = 0; i < b->k; i++ ){
     bitset_set(b->bits,(l+h*i) % b->m);
   }
-  b->count++;
-};
-*/
-
-struct bpf_bloom {
-	struct bpf_map map;
-	spinlock_t lock;
-        bitset_t bits;
-        uint32_t m; // Number of buckets
-        uint8_t k;  // Number of hashes
 };
 
 /* Called from syscall */
