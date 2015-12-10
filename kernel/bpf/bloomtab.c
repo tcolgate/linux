@@ -21,17 +21,9 @@ bool bitset_isset(bitset_t bs, uint32_t n){
   return ((bs[B] & (1 << b)) == ((uint8_t)1<<b));
 };
 
-void bitset_clear(bitset_t b){
+void bitset_clear(bitset_t b, uint32_t size){
+  memset(b, 0, size);
 };
-
-typedef struct bloom {
-  bitset_t bits;
-  uint32_t m;
-  uint8_t k;
-}* bloom_t;
-
-#define ceil(x, y) \
-        ({ unsigned long __x = (x), __y = (y); (__x + __y - 1) / __y; })
 
 struct bpf_bloom {
 	struct bpf_map map;
@@ -42,7 +34,35 @@ struct bpf_bloom {
         uint8_t k;  // Number of hashes
 };
 
+bool bloom_test(struct bpf_bloom *b, void* key){
+  uint32_t l = jhash2(key,b->len,JHASH_INITVAL);
+  uint32_t h = jhash2(key,b->len,l);
+  
+  // Check the K bits.
+  uint32_t i = 0;
+  for (i = 0; i < b->k; i++ ){
+    if (!bitset_isset(b->bits,(l+h*i) % b->m))
+      return false;
+  }
+
+  return true;
+};
+
+void bloom_add(struct bpf_bloom *b, void* key){
+  uint32_t l = jhash2(key,b->len,JHASH_INITVAL);
+  uint32_t h = jhash2(key,b->len,l);
+
+  // Set the K bits.
+  uint32_t i = 0;
+  for (i = 0; i < b->k; i++ ){
+    bitset_set(b->bits,(l+h*i) % b->m);
+  }
+};
+
 /*
+#define ceil(x, y) \
+        ({ unsigned long __x = (x), __y = (y); (__x + __y - 1) / __y; })
+
 bloom_t bloom_new(uint64_t n, double fprate){
   double fillRatio = 0.5;
 
@@ -56,33 +76,7 @@ bloom_t bloom_new(uint64_t n, double fprate){
 
   return b;
 }
-
 */
-
-bool bloom_test(struct bpf_bloom *b, void* key, uint32_t len){
-  uint32_t l = jhash2(key,len,JHASH_INITVAL);
-  uint32_t h = jhash2(key,len,l);
-  
-  // Check the K bits.
-  uint32_t i = 0;
-  for (i = 0; i < b->k; i++ ){
-    if (!bitset_isset(b->bits,(l+h*i) % b->m))
-      return false;
-  }
-
-  return true;
-};
-
-void bloom_add(struct bpf_bloom *b, void* key, uint32_t len){
-  uint32_t l = jhash2(key,len,JHASH_INITVAL);
-  uint32_t h = jhash2(key,len,l);
-
-  // Set the K bits.
-  uint32_t i = 0;
-  for (i = 0; i < b->k; i++ ){
-    bitset_set(b->bits,(l+h*i) % b->m);
-  }
-};
 
 /* Called from syscall */
 static struct bpf_map *bloom_map_alloc(union bpf_attr *attr)
@@ -90,7 +84,7 @@ static struct bpf_map *bloom_map_alloc(union bpf_attr *attr)
 	struct bpf_bloom *bloom;
 	int err, i;
 
-	bloom = kzalloc(sizeof(*bloom), GFP_USER);
+	bloom = kzalloc(sizeof(bloom), GFP_USER);
 	if (!bloom)
 		return ERR_PTR(-ENOMEM);
 
@@ -150,9 +144,19 @@ free_bloom:
 }
 
 /* Called from syscall or from eBPF program */
+static int bloom_map_update_elem(struct bpf_map *map, void *key, void *value,
+				u64 map_flags)
+{
+	struct bpf_bloom *b = container_of(map, struct bpf_bloom, map);
+        bloom_add(b, key);
+        return -ENOENT;
+}
+
+/* Called from syscall or from eBPF program */
 static void *bloom_map_lookup_elem(struct bpf_map *map, void *key)
 {
-        printk("* In function %s *\n", __FUNCTION__);
+	struct bpf_bloom *b = container_of(map, struct bpf_bloom, map);
+        bloom_test(b, key);
 	return NULL;
 }
 
@@ -163,22 +167,9 @@ static int bloom_map_get_next_key(struct bpf_map *map, void *key, void *next_key
 }
 
 /* Called from syscall or from eBPF program */
-static int bloom_map_update_elem(struct bpf_map *map, void *key, void *value,
-				u64 map_flags)
-{
-        printk("* In function %s *\n", __FUNCTION__);
-  return -ENOENT;
-}
-
-/* Called from syscall or from eBPF program */
 static int bloom_map_delete_elem(struct bpf_map *map, void *key)
 {
-        printk("* In function %s *\n", __FUNCTION__);
-  return -ENOENT;
-}
-
-static void delete_all_elements(struct bpf_bloom *bloom)
-{
+        return -ENOENT;
 }
 
 /* Called when map->refcnt goes to zero, either from workqueue or from syscall */
